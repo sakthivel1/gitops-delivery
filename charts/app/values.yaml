@@ -13,11 +13,11 @@ serviceAccount:
 
 podAnnotations:
   prometheus.io/scrape: "true"
-  prometheus.io/port: "80"
+  prometheus.io/port: "8080"
   prometheus.io/path: "/metrics"
 
 podSecurityContext:
-  runAsNonRoot: false  # nginx:alpine runs as root by default
+  runAsNonRoot: true
   fsGroup: 2000
 
 securityContext:
@@ -27,7 +27,7 @@ securityContext:
 service:
   type: ClusterIP
   port: 80
-  targetPort: 80
+  targetPort: 8080
 
 ingress:
   enabled: true
@@ -66,14 +66,14 @@ autoscaling:
 livenessProbe:
   httpGet:
     path: /healthz
-    port: 80
+    port: 8080
   initialDelaySeconds: 5
   periodSeconds: 20
 
 readinessProbe:
   httpGet:
     path: /ready
-    port: 80
+    port: 8080
   initialDelaySeconds: 3
   periodSeconds: 10
 
@@ -88,15 +88,10 @@ envFrom: []
 volumeMounts:
   - name: tmp
     mountPath: /tmp
-  - name: nginx-config
-    mountPath: /etc/nginx/conf.d
 
 volumes:
   - name: tmp
     emptyDir: {}
-  - name: nginx-config
-    configMap:
-      name: finapp-nginx  # Matches ConfigMap: {{ include "finapp.fullname" . }}-nginx
 
 nodeSelector: {}
 
