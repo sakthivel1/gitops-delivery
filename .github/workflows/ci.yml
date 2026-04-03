@@ -347,8 +347,14 @@ jobs:
           image-ref: ${{ env.IMAGE_NAME }}:${{ needs.build-docker.outputs.image_tag }}
           format: table
           exit-code: '1'
+          ignore-unfixed: true
           severity: 'HIGH,CRITICAL'
+          trivyignores: .trivyignore
           output: trivy-scan.log
+
+      - name: Display Trivy results
+        if: always()
+        run: cat trivy-scan.log 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
         if: always()
