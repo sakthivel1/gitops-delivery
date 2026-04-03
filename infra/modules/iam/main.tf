@@ -125,6 +125,8 @@ resource "aws_iam_role" "cicd_runner" {
   tags = var.common_tags
 }
 
+# checkov:skip=CKV_AWS_355: ECR GetAuthorizationToken requires Resource="*" by AWS API design
+# checkov:skip=CKV_AWS_290: ECR push actions require broad resource access for token-based auth
 resource "aws_iam_role_policy" "cicd_runner" {
   name = "${var.name}-cicd-runner-policy"
   role = aws_iam_role.cicd_runner.id
@@ -325,7 +327,10 @@ resource "aws_s3_bucket_lifecycle_configuration" "evidence" {
       storage_class = "GLACIER"
     }
     expiration {
-      days = 2555  # 7 years retention for financial compliance
+      days = 2555 # 7 years retention for financial compliance
+    }
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
     }
   }
 }

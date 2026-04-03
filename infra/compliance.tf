@@ -52,7 +52,8 @@ resource "aws_config_configuration_recorder" "main" {
   role_arn = aws_iam_role.config.arn
 
   recording_group {
-    all_supported = true
+    all_supported                 = true
+    include_global_resource_types = true
   }
 }
 
@@ -216,6 +217,45 @@ resource "aws_kms_key_policy" "main" {
   })
 }
 
+# ---- CloudTrail CloudWatch Log Group -----------------------------------------
+resource "aws_cloudwatch_log_group" "cloudtrail" {
+  name              = "/aws/cloudtrail/${var.project_name}"
+  retention_in_days = 365
+  kms_key_id        = aws_kms_key.main.arn
+
+  tags = local.common_tags
+}
+
+resource "aws_iam_role" "cloudtrail_cw" {
+  name = "${var.project_name}-cloudtrail-cw-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = { Service = "cloudtrail.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "cloudtrail_cw" {
+  name = "${var.project_name}-cloudtrail-cw-policy"
+  role = aws_iam_role.cloudtrail_cw.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ]
+      Resource = "${aws_cloudwatch_log_group.cloudtrail.arn}:*"
+    }]
+  })
+}
+
 # ---- CloudTrail (Audit log of all API calls) ---------------------------------
 # checkov:skip=CKV_AWS_252: SNS notification for CloudTrail is optional; alerts handled via CloudWatch Alarms
 resource "aws_cloudtrail" "main" {
@@ -225,6 +265,9 @@ resource "aws_cloudtrail" "main" {
   is_multi_region_trail         = true
   enable_log_file_validation    = true
   kms_key_id                    = aws_kms_key.main.arn
+
+  cloud_watch_logs_group_arn = "${aws_cloudwatch_log_group.cloudtrail.arn}:*"
+  cloud_watch_logs_role_arn  = aws_iam_role.cloudtrail_cw.arn
 
   event_selector {
     read_write_type           = "All"

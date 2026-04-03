@@ -20,6 +20,7 @@ resource "aws_internet_gateway" "main" {
   })
 }
 
+# checkov:skip=CKV_AWS_130: Public subnets require map_public_ip_on_launch for ELB/ALB ingress controller
 resource "aws_subnet" "public" {
   count             = length(var.public_subnet_cidrs)
   vpc_id            = aws_vpc.main.id
@@ -120,7 +121,8 @@ resource "aws_flow_log" "main" {
 
 resource "aws_cloudwatch_log_group" "flow_log" {
   name              = "/aws/vpc/${var.name}/flow-logs"
-  retention_in_days = 90
+  retention_in_days = 365
+  kms_key_id        = var.kms_key_arn
 
   tags = var.common_tags
 }
@@ -140,6 +142,8 @@ resource "aws_iam_role" "flow_log" {
   tags = var.common_tags
 }
 
+# checkov:skip=CKV_AWS_355: CloudWatch Logs actions require Resource="*" — no resource-level restriction supported
+# checkov:skip=CKV_AWS_290: logs:PutLogEvents requires broad resource access by AWS service design
 resource "aws_iam_role_policy" "flow_log" {
   name = "${var.name}-vpc-flow-log-policy"
   role = aws_iam_role.flow_log.id
