@@ -1,18 +1,21 @@
 ################################################################################
 # Stage 1 — deps (cached layer)
 ################################################################################
-FROM python:3.12-slim AS deps
+FROM python:3.12-alpine AS deps
 
 WORKDIR /app
+
+# Build deps for psycopg2-binary (needs libpq headers on Alpine)
+RUN apk add --no-cache gcc musl-dev libpq-dev
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip \
  && pip install --no-cache-dir -r requirements.txt
 
 ################################################################################
-# Stage 2 — runtime
+# Stage 2 — runtime (minimal Alpine)
 ################################################################################
-FROM python:3.12-slim AS runtime
+FROM python:3.12-alpine AS runtime
 
 ARG BUILD_DATE
 ARG VCS_REF
@@ -22,8 +25,11 @@ LABEL org.opencontainers.image.created="${BUILD_DATE}" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.version="${VERSION}"
 
+# Runtime library for psycopg2
+RUN apk add --no-cache libpq
+
 # Non-root user
-RUN groupadd -r finapp && useradd -r -g finapp -d /app -s /sbin/nologin finapp
+RUN addgroup -S finapp && adduser -S -G finapp -h /app -s /sbin/nologin finapp
 
 WORKDIR /app
 

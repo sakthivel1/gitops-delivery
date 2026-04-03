@@ -1,0 +1,3 @@
+# Trivy ignore file — unfixed OS-level CVEs with no upstream patch available.
+# Each entry must be reviewed and re-evaluated on each release.
+# Format: CVE-ID [expiry-date] [# reason]
