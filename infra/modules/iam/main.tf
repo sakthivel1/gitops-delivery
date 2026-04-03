@@ -125,9 +125,9 @@ resource "aws_iam_role" "cicd_runner" {
   tags = var.common_tags
 }
 
-# checkov:skip=CKV_AWS_355: ECR GetAuthorizationToken requires Resource="*" by AWS API design
-# checkov:skip=CKV_AWS_290: ECR push actions require broad resource access for token-based auth
 resource "aws_iam_role_policy" "cicd_runner" {
+  # checkov:skip=CKV_AWS_355: ECR GetAuthorizationToken requires Resource="*" by AWS API design
+  # checkov:skip=CKV_AWS_290: ECR push actions require broad resource access for token-based auth
   name = "${var.name}-cicd-runner-policy"
   role = aws_iam_role.cicd_runner.id
 

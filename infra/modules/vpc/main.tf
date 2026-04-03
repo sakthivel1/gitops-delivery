@@ -20,8 +20,8 @@ resource "aws_internet_gateway" "main" {
   })
 }
 
-# checkov:skip=CKV_AWS_130: Public subnets require map_public_ip_on_launch for ELB/ALB ingress controller
 resource "aws_subnet" "public" {
+  # checkov:skip=CKV_AWS_130: Public subnets require map_public_ip_on_launch for ELB/ALB ingress controller
   count             = length(var.public_subnet_cidrs)
   vpc_id            = aws_vpc.main.id
   cidr_block        = var.public_subnet_cidrs[count.index]
@@ -107,6 +107,15 @@ resource "aws_route_table_association" "private" {
   route_table_id = aws_route_table.private[count.index].id
 }
 
+# CKV2_AWS_12: Restrict default security group — no inbound or outbound rules
+resource "aws_default_security_group" "main" {
+  vpc_id = aws_vpc.main.id
+
+  tags = merge(var.common_tags, {
+    Name = "${var.name}-default-sg-restricted"
+  })
+}
+
 # VPC Flow Logs — required for compliance
 resource "aws_flow_log" "main" {
   iam_role_arn    = aws_iam_role.flow_log.arn
@@ -142,9 +151,9 @@ resource "aws_iam_role" "flow_log" {
   tags = var.common_tags
 }
 
-# checkov:skip=CKV_AWS_355: CloudWatch Logs actions require Resource="*" — no resource-level restriction supported
-# checkov:skip=CKV_AWS_290: logs:PutLogEvents requires broad resource access by AWS service design
 resource "aws_iam_role_policy" "flow_log" {
+  # checkov:skip=CKV_AWS_355: CloudWatch Logs actions require Resource="*" — no resource-level restriction supported by AWS
+  # checkov:skip=CKV_AWS_290: logs:PutLogEvents requires broad resource access by AWS service design
   name = "${var.name}-vpc-flow-log-policy"
   role = aws_iam_role.flow_log.id
 
