@@ -187,16 +187,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Create evidence directory
-        run: mkdir -p ${{ env.EVIDENCE_DIR }}
-
       - name: Run tfsec
         uses: aquasecurity/tfsec-action@v1.0.0
         with:
           working_directory: infra/
           format: json
           soft_fail: true
-          additional_args: --minimum-severity HIGH --out ${{ github.workspace }}/${{ env.EVIDENCE_DIR }}/tfsec-results.json
+          additional_args: --minimum-severity HIGH --out /github/workspace/tfsec-results.json
+
+      - name: Move tfsec results to evidence dir
+        if: always()
+        run: |
+          mkdir -p ${{ env.EVIDENCE_DIR }}
+          mv tfsec-results.json ${{ env.EVIDENCE_DIR }}/tfsec-results.json 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
         if: always()
