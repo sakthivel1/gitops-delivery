@@ -1,0 +1,342 @@
+################################################################################
+# GitHub Actions — Deploy Pipeline
+# Stages: deploy-staging → deploy-prod (manual approval) → evidence
+#
+# Triggered by: successful CI pipeline on main branch
+# Prod approval: configured via GitHub Environments (required reviewers)
+################################################################################
+
+name: Deploy Pipeline
+
+on:
+  workflow_run:
+    workflows: ['CI Pipeline']
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: read
+  id-token: write
+
+env:
+  TERRAFORM_VERSION: '1.6.6'
+  HELM_VERSION: '3.14.0'
+  ARGOCD_VERSION: '2.10.0'
+  AWS_DEFAULT_REGION: 'us-east-1'
+  EVIDENCE_DIR: 'evidence-bundle'
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+
+jobs:
+  # Only run if CI succeeded
+  check-ci:
+    name: Check CI status
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - run: echo "CI passed — proceeding with deployment"
+
+################################################################################
+# STAGE: deploy-staging (auto on main after CI passes)
+################################################################################
+  deploy-staging:
+    name: Deploy — Staging environment
+    runs-on: ubuntu-latest
+    needs: check-ci
+    environment:
+      name: staging
+      url: https://app.staging.internal.company.com
+    outputs:
+      image_tag: ${{ steps.get_tag.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Get image tag from CI run
+        id: get_tag
+        run: |
+          SHORT_SHA=$(echo "${{ github.event.workflow_run.head_sha }}" | cut -c1-7)
+          echo "image_tag=$SHORT_SHA" >> $GITHUB_OUTPUT
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_DEFAULT_REGION }}
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ secrets.EKS_CLUSTER_NAME }} \
+            --region ${{ env.AWS_DEFAULT_REGION }}
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: ArgoCD sync — staging
+        run: |
+          mkdir -p ${{ env.EVIDENCE_DIR }}
+
+          curl -sSL -o argocd \
+            https://github.com/argoproj/argo-cd/releases/download/v${{ env.ARGOCD_VERSION }}/argocd-linux-amd64
+          chmod +x argocd
+
+          ./argocd app set finapp-staging \
+            --helm-set image.tag=${{ steps.get_tag.outputs.image_tag }} \
+            --server ${{ secrets.ARGOCD_SERVER }} \
+            --auth-token ${{ secrets.ARGOCD_AUTH_TOKEN }} \
+            --grpc-web
+
+          ./argocd app sync finapp-staging \
+            --server ${{ secrets.ARGOCD_SERVER }} \
+            --auth-token ${{ secrets.ARGOCD_AUTH_TOKEN }} \
+            --grpc-web \
+            --timeout 300 \
+            2>&1 | tee ${{ env.EVIDENCE_DIR }}/argocd-sync-staging.log
+
+          ./argocd app wait finapp-staging \
+            --health \
+            --timeout 300 \
+            --server ${{ secrets.ARGOCD_SERVER }} \
+            --auth-token ${{ secrets.ARGOCD_AUTH_TOKEN }} \
+            --grpc-web
+
+      - name: Save staging deploy evidence
+        run: |
+          cat > ${{ env.EVIDENCE_DIR }}/staging-deploy.env <<EOF
+          DEPLOY_ENV=staging
+          DEPLOY_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          DEPLOYED_BY=${{ github.actor }}
+          IMAGE_TAG=${{ steps.get_tag.outputs.image_tag }}
+          COMMIT=${{ github.event.workflow_run.head_sha }}
+          RUN_URL=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-staging-${{ github.run_id }}
+          path: ${{ env.EVIDENCE_DIR }}/
+          retention-days: 365
+
+################################################################################
+# STAGE: terraform-apply (infra — manual gate via production environment)
+################################################################################
+  terraform-apply-prod:
+    name: Infra — Terraform Apply (prod)
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    # Manual approval enforced by GitHub Environment "production-infra" protection rules
+    environment:
+      name: production-infra
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_DEFAULT_REGION }}
+
+      - name: Terraform init
+        run: |
+          mkdir -p ${{ env.EVIDENCE_DIR }}
+          cd infra
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=${{ github.event.repository.name }}/prod/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_DEFAULT_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}"
+
+      - name: Terraform plan (prod)
+        run: |
+          cd infra
+          terraform plan \
+            -var-file="environments/prod.tfvars" \
+            -out=tfplan-prod.binary \
+            2>&1 | tee ../${{ env.EVIDENCE_DIR }}/terraform-plan-prod.log
+          terraform show -json tfplan-prod.binary > ../${{ env.EVIDENCE_DIR }}/terraform-plan-prod.json
+
+      - name: Terraform apply (prod)
+        run: |
+          cd infra
+          terraform apply -auto-approve tfplan-prod.binary \
+            2>&1 | tee ../${{ env.EVIDENCE_DIR }}/terraform-apply-prod.log
+
+      - name: Save infra apply evidence
+        run: |
+          echo "INFRA_APPLIED_BY=${{ github.actor }}" >> ${{ env.EVIDENCE_DIR }}/infra-apply.env
+          echo "INFRA_APPLY_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> ${{ env.EVIDENCE_DIR }}/infra-apply.env
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-terraform-prod-${{ github.run_id }}
+          path: ${{ env.EVIDENCE_DIR }}/
+          retention-days: 365
+
+################################################################################
+# STAGE: deploy-prod (manual approval via GitHub Environment)
+# Configure "production" environment in:
+# GitHub → Settings → Environments → production → Required reviewers
+################################################################################
+  deploy-prod:
+    name: Deploy — Production environment
+    runs-on: ubuntu-latest
+    needs: [deploy-staging, terraform-apply-prod]
+    # !! IMPORTANT: Add required reviewers to "production" environment in GitHub Settings
+    environment:
+      name: production
+      url: https://app.internal.company.com
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_DEFAULT_REGION }}
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ secrets.EKS_CLUSTER_NAME }} \
+            --region ${{ env.AWS_DEFAULT_REGION }}
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: ArgoCD sync — production
+        run: |
+          mkdir -p ${{ env.EVIDENCE_DIR }}
+
+          curl -sSL -o argocd \
+            https://github.com/argoproj/argo-cd/releases/download/v${{ env.ARGOCD_VERSION }}/argocd-linux-amd64
+          chmod +x argocd
+
+          ./argocd app set finapp-prod \
+            --helm-set image.tag=${{ needs.deploy-staging.outputs.image_tag }} \
+            --server ${{ secrets.ARGOCD_SERVER }} \
+            --auth-token ${{ secrets.ARGOCD_AUTH_TOKEN }} \
+            --grpc-web
+
+          ./argocd app sync finapp-prod \
+            --server ${{ secrets.ARGOCD_SERVER }} \
+            --auth-token ${{ secrets.ARGOCD_AUTH_TOKEN }} \
+            --grpc-web \
+            --timeout 600 \
+            2>&1 | tee ${{ env.EVIDENCE_DIR }}/argocd-sync-prod.log
+
+          ./argocd app wait finapp-prod \
+            --health \
+            --timeout 600 \
+            --server ${{ secrets.ARGOCD_SERVER }} \
+            --auth-token ${{ secrets.ARGOCD_AUTH_TOKEN }} \
+            --grpc-web
+
+      - name: Save prod deploy evidence
+        run: |
+          cat > ${{ env.EVIDENCE_DIR }}/prod-deploy.env <<EOF
+          DEPLOY_ENV=production
+          DEPLOY_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          DEPLOYED_BY=${{ github.actor }}
+          APPROVED_BY=${{ github.actor }}
+          IMAGE_TAG=${{ needs.deploy-staging.outputs.image_tag }}
+          COMMIT=${{ github.event.workflow_run.head_sha }}
+          RUN_URL=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-deploy-prod-${{ github.run_id }}
+          path: ${{ env.EVIDENCE_DIR }}/
+          retention-days: 365
+
+################################################################################
+# STAGE: evidence — collect, zip, upload to S3
+################################################################################
+  evidence-package:
+    name: Evidence — Package & Upload
+    runs-on: ubuntu-latest
+    needs: [deploy-prod]
+    if: always() && needs.deploy-staging.result == 'success'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Download all evidence artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ env.EVIDENCE_DIR }}/
+          pattern: evidence-*-${{ github.run_id }}
+          merge-multiple: true
+
+      - name: Generate release notes
+        run: |
+          export IMAGE_TAG=${{ needs.deploy-staging.outputs.image_tag }}
+          export CI_PIPELINE_URL=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          export CI_COMMIT_SHA=${{ github.event.workflow_run.head_sha }}
+          export CI_COMMIT_REF_NAME=main
+          export GITLAB_USER_LOGIN=${{ github.actor }}
+          bash pipeline/generate-release-notes.sh "" HEAD ${{ env.EVIDENCE_DIR }}/release-notes.md
+
+      - name: Generate manifest with SHA-256
+        run: |
+          cat > ${{ env.EVIDENCE_DIR }}/manifest.json <<EOF
+          {
+            "run_id": "${{ github.run_id }}",
+            "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+            "commit_sha": "${{ github.event.workflow_run.head_sha }}",
+            "branch": "main",
+            "project": "${{ github.repository }}",
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "image_tag": "${{ needs.deploy-staging.outputs.image_tag }}",
+            "triggered_by": "${{ github.actor }}"
+          }
+          EOF
+
+          echo "=== SHA-256 checksums ===" > ${{ env.EVIDENCE_DIR }}/sha256-manifest.txt
+          find ${{ env.EVIDENCE_DIR }} -type f ! -name sha256-manifest.txt \
+            | sort \
+            | xargs sha256sum >> ${{ env.EVIDENCE_DIR }}/sha256-manifest.txt
+          cat ${{ env.EVIDENCE_DIR }}/sha256-manifest.txt
+
+      - name: Package evidence bundle
+        run: |
+          BUNDLE="evidence-${{ github.event.repository.name }}-${{ github.run_id }}-$(date +%Y%m%d).zip"
+          zip -r "$BUNDLE" ${{ env.EVIDENCE_DIR }}/
+          echo "BUNDLE_NAME=$BUNDLE" >> $GITHUB_ENV
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_DEFAULT_REGION }}
+
+      - name: Upload evidence bundle to S3
+        run: |
+          aws s3 cp "$BUNDLE_NAME" \
+            "s3://${{ secrets.EVIDENCE_BUCKET }}/pipelines/${{ github.run_id }}/$BUNDLE_NAME" \
+            --sse aws:kms \
+            --metadata "run-id=${{ github.run_id }},commit=${{ github.event.workflow_run.head_sha }}"
+          echo "Evidence uploaded: s3://${{ secrets.EVIDENCE_BUCKET }}/pipelines/${{ github.run_id }}/$BUNDLE_NAME"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: evidence-final-bundle-${{ github.run_id }}
+          path: ${{ env.EVIDENCE_DIR }}/
+          retention-days: 365

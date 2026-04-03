@@ -1,0 +1,152 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "type": "datasource",
+      "pluginId": "prometheus"
+    }
+  ],
+  "title": "CI/CD Pipeline Trends",
+  "uid": "finapp-cicd-trends",
+  "tags": ["finapp", "cicd", "gitlab", "compliance"],
+  "timezone": "browser",
+  "refresh": "5m",
+  "time": { "from": "now-7d", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Pipeline Success Rate (7d)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "datasource": "${DS_PROMETHEUS}",
+          "expr": "(sum(gitlab_ci_pipeline_status{status='success'}) / sum(gitlab_ci_pipeline_status)) * 100",
+          "legendFormat": "Success Rate"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "steps": [
+              { "color": "red", "value": 0 },
+              { "color": "yellow", "value": 85 },
+              { "color": "green", "value": 95 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Deployment Frequency",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "description": "DORA metric: deployments per day",
+      "targets": [
+        {
+          "datasource": "${DS_PROMETHEUS}",
+          "expr": "count_over_time(gitlab_ci_pipeline_status{status='success',ref='main'}[1d])",
+          "legendFormat": "Deploys/day"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "id": 3,
+      "title": "Mean Time to Recovery (MTTR)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "description": "Average time from failure to next successful deployment",
+      "targets": [
+        {
+          "datasource": "${DS_PROMETHEUS}",
+          "expr": "avg(gitlab_ci_pipeline_duration_seconds{status='success',ref='main'})",
+          "legendFormat": "Avg pipeline duration"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 4,
+      "title": "Change Failure Rate",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "description": "DORA metric: % of deployments causing issues",
+      "targets": [
+        {
+          "datasource": "${DS_PROMETHEUS}",
+          "expr": "(sum(gitlab_ci_pipeline_status{status='failed',ref='main'}) / sum(gitlab_ci_pipeline_status{ref='main'})) * 100",
+          "legendFormat": "Failure Rate"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 5 },
+              { "color": "red", "value": 15 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Pipeline Runs by Status (7d)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 4 },
+      "targets": [
+        {
+          "datasource": "${DS_PROMETHEUS}",
+          "expr": "sum by(status) (increase(gitlab_ci_pipeline_status[1h]))",
+          "legendFormat": "{{ status }}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "id": 6,
+      "title": "Security Scan Violations Over Time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "description": "HIGH/CRITICAL violations found by Checkov/Trivy per pipeline run",
+      "targets": [
+        {
+          "datasource": "${DS_PROMETHEUS}",
+          "expr": "gitlab_ci_job_status{job_name=~'security:.*', status='failed'}",
+          "legendFormat": "Security gate failed — {{ job_name }}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": 0 },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "ArgoCD Sync Events",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "targets": [
+        {
+          "datasource": "${DS_PROMETHEUS}",
+          "expr": "sum by(name, sync_status) (argocd_app_info)",
+          "legendFormat": "{{ name }} — {{ sync_status }}"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 38
+}

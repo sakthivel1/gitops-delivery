@@ -1,0 +1,60 @@
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfstate.*.backup
+*.tfplan
+tfplan.binary
+infra/.terraform.lock.hcl
+*.tfvars.json
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+crash.log
+crash.*.log
+
+# Terraform backend config (contains bucket names)
+infra/backend-*.conf
+
+# Evidence bundles (generated at runtime — stored in S3)
+evidence-*.zip
+evidence-bundle/
+
+# Helm
+charts/**/charts/
+charts/**/*.tgz
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+venv/
+.venv/
+.env
+
+# Docker
+.dockerignore
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Node (if any tooling)
+node_modules/
+
+# ArgoCD auth tokens
+.argocd-auth-token
+
+# Local lifecycle JSON (used for one-off AWS CLI commands)
+infra/lifecycle.json

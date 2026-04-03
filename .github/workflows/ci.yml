@@ -1,0 +1,509 @@
+################################################################################
+# GitHub Actions — CI Pipeline
+# Stages: validate → lint → security → build → test → deploy-dev
+#
+# Branch convention enforced: feature/JIRA-ID-description | hotfix/JIRA-ID-*
+# Triggered on: push to feature/hotfix branches and PRs to main
+################################################################################
+
+name: CI Pipeline
+
+on:
+  push:
+    branches:
+      - main
+      - 'feature/**'
+      - 'hotfix/**'
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  packages: write          # push to GHCR
+  security-events: write   # upload SARIF results
+  id-token: write          # OIDC auth with AWS
+
+env:
+  TERRAFORM_VERSION: '1.6.6'
+  HELM_VERSION: '3.14.0'
+  AWS_DEFAULT_REGION: 'us-east-1'
+  EVIDENCE_DIR: 'evidence-bundle'
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+
+################################################################################
+# STAGE: validate — Branch naming + Jira ID extraction
+################################################################################
+jobs:
+  validate-branch:
+    name: Validate Branch Name
+    runs-on: ubuntu-latest
+    outputs:
+      jira_id: ${{ steps.parse.outputs.jira_id }}
+    steps:
+      - name: Enforce branch naming convention
+        id: parse
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+          echo "Branch: $BRANCH"
+          if [[ "$BRANCH" == "main" ]]; then
+            echo "Main branch — skipping branch name check"
+            echo "jira_id=MAIN" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          if echo "$BRANCH" | grep -qE '^(feature|hotfix)/[A-Z]+-[0-9]+-[a-z0-9-]+$'; then
+            JIRA_ID=$(echo "$BRANCH" | sed 's|.*/\([A-Z]*-[0-9]*\)-.*|\1|')
+            echo "Branch valid. Jira ID: $JIRA_ID"
+            echo "jira_id=$JIRA_ID" >> $GITHUB_OUTPUT
+          else
+            echo "ERROR: Branch '$BRANCH' does not match convention: feature/JIRA-ID-description"
+            echo "Examples: feature/APP-123-add-login  hotfix/APP-456-fix-crash"
+            exit 1
+          fi
+
+################################################################################
+# STAGE: lint
+################################################################################
+  lint-terraform:
+    name: Lint — Terraform fmt & validate
+    runs-on: ubuntu-latest
+    needs: validate-branch
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Terraform fmt check
+        run: |
+          mkdir -p ${{ env.EVIDENCE_DIR }}
+          cd infra
+          terraform fmt -check -recursive 2>&1 | tee ../${{ env.EVIDENCE_DIR }}/lint-terraform.log
+
+      - name: Terraform validate
+        run: |
+          cd infra
+          terraform init -backend=false 2>&1 | tee -a ../${{ env.EVIDENCE_DIR }}/lint-terraform.log
+          terraform validate 2>&1 | tee -a ../${{ env.EVIDENCE_DIR }}/lint-terraform.log
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-lint-terraform-${{ github.run_id }}
+          path: ${{ env.EVIDENCE_DIR }}/
+          retention-days: 365
+
+  lint-tflint:
+    name: Lint — tflint
+    runs-on: ubuntu-latest
+    needs: validate-branch
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: v0.50.0
+
+      - name: Run tflint
+        run: |
+          mkdir -p ${{ env.EVIDENCE_DIR }}
+          cd infra
+          tflint --init
+          tflint --recursive --format compact 2>&1 | tee ../${{ env.EVIDENCE_DIR }}/tflint.log
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-tflint-${{ github.run_id }}
+          path: ${{ env.EVIDENCE_DIR }}/
+          retention-days: 365
+
+  lint-helm:
+    name: Lint — Helm charts
+    runs-on: ubuntu-latest
+    needs: validate-branch
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Helm lint all environments
+        run: |
+          mkdir -p ${{ env.EVIDENCE_DIR }}
+          helm lint charts/app -f charts/app/values.yaml -f charts/app/values-dev.yaml     2>&1 | tee ${{ env.EVIDENCE_DIR }}/helm-lint-dev.log
+          helm lint charts/app -f charts/app/values.yaml -f charts/app/values-staging.yaml 2>&1 | tee ${{ env.EVIDENCE_DIR }}/helm-lint-staging.log
+          helm lint charts/app -f charts/app/values.yaml -f charts/app/values-prod.yaml    2>&1 | tee ${{ env.EVIDENCE_DIR }}/helm-lint-prod.log
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-helm-lint-${{ github.run_id }}
+          path: ${{ env.EVIDENCE_DIR }}/
+          retention-days: 365
+
+  lint-yaml:
+    name: Lint — yamllint
+    runs-on: ubuntu-latest
+    needs: validate-branch
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install yamllint==1.35.1
+      - run: yamllint -c .yamllint.yml charts/ pipeline/ observability/
+
+################################################################################
+# STAGE: security
+################################################################################
+  security-checkov:
+    name: Security — Checkov (Terraform IaC)
+    runs-on: ubuntu-latest
+    needs: [lint-terraform, lint-tflint]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: infra/
+          framework: terraform
+          output_format: cli,junitxml
+          output_file_path: ${{ env.EVIDENCE_DIR }}/
+          soft_fail_on: LOW,MEDIUM
+          hard_fail_on: HIGH,CRITICAL
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-checkov-${{ github.run_id }}
+          path: ${{ env.EVIDENCE_DIR }}/
+          retention-days: 365
+
+  security-tfsec:
+    name: Security — tfsec
+    runs-on: ubuntu-latest
+    needs: [lint-terraform]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run tfsec
+        uses: aquasecurity/tfsec-action@v1.0.0
+        with:
+          working_directory: infra/
+          minimum_severity: HIGH
+          format: json
+          additional_args: --out ${{ env.EVIDENCE_DIR }}/tfsec-results.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-tfsec-${{ github.run_id }}
+          path: ${{ env.EVIDENCE_DIR }}/
+          retention-days: 365
+
+  security-secret-detection:
+    name: Security — Secret Detection (Gitleaks)
+    runs-on: ubuntu-latest
+    needs: validate-branch
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Gitleaks scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+################################################################################
+# STAGE: build
+################################################################################
+  build-docker:
+    name: Build — Docker image → GHCR
+    runs-on: ubuntu-latest
+    needs: [security-checkov, security-tfsec, security-secret-detection]
+    outputs:
+      image_tag: ${{ steps.meta.outputs.version }}
+      image_digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=,format=short
+            type=ref,event=branch
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            VCS_REF=${{ github.sha }}
+            VERSION=${{ steps.meta.outputs.version }}
+
+      - name: Save build evidence
+        run: |
+          mkdir -p ${{ env.EVIDENCE_DIR }}
+          cat > ${{ env.EVIDENCE_DIR }}/build-info.env <<EOF
+          IMAGE_TAG=${{ steps.meta.outputs.version }}
+          IMAGE_DIGEST=${{ steps.push.outputs.digest }}
+          IMAGE_NAME=${{ env.IMAGE_NAME }}
+          BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          COMMIT=${{ github.sha }}
+          ACTOR=${{ github.actor }}
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: evidence-build-${{ github.run_id }}
+          path: ${{ env.EVIDENCE_DIR }}/
+          retention-days: 365
+
+  build-terraform-plan:
+    name: Build — Terraform Plan (dev)
+    runs-on: ubuntu-latest
+    needs: [security-checkov]
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/feature/')
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_DEFAULT_REGION }}
+
+      - name: Terraform init
+        run: |
+          mkdir -p ${{ env.EVIDENCE_DIR }}
+          cd infra
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=${{ github.event.repository.name }}/dev/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_DEFAULT_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}" \
+            2>&1 | tee ../${{ env.EVIDENCE_DIR }}/terraform-init.log
+
+      - name: Terraform plan
+        run: |
+          cd infra
+          terraform plan \
+            -var-file="environments/dev.tfvars" \
+            -out=tfplan.binary \
+            2>&1 | tee ../${{ env.EVIDENCE_DIR }}/terraform-plan.log
+          terraform show -json tfplan.binary > ../${{ env.EVIDENCE_DIR }}/terraform-plan.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: evidence-tfplan-${{ github.run_id }}
+          path: |
+            ${{ env.EVIDENCE_DIR }}/
+            infra/tfplan.binary
+          retention-days: 365
+
+  security-trivy:
+    name: Security — Trivy container scan
+    runs-on: ubuntu-latest
+    needs: build-docker
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:${{ needs.build-docker.outputs.image_tag }}
+          format: table
+          exit-code: '1'
+          severity: 'HIGH,CRITICAL'
+          output: trivy-scan.log
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-trivy-${{ github.run_id }}
+          path: trivy-scan.log
+          retention-days: 365
+
+################################################################################
+# STAGE: test
+################################################################################
+  test-unit:
+    name: Test — Unit tests
+    runs-on: ubuntu-latest
+    needs: build-docker
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-test.txt
+
+      - name: Run unit tests
+        run: |
+          mkdir -p ${{ env.EVIDENCE_DIR }}
+          pytest tests/unit/ \
+            --junitxml=${{ env.EVIDENCE_DIR }}/unit-test-results.xml \
+            --cov=src \
+            --cov-report=xml:${{ env.EVIDENCE_DIR }}/coverage.xml \
+            -v 2>&1 | tee ${{ env.EVIDENCE_DIR }}/unit-tests.log
+
+      - name: Publish test results
+        uses: mikepenz/action-junit-report@v4
+        if: always()
+        with:
+          report_paths: ${{ env.EVIDENCE_DIR }}/unit-test-results.xml
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-unit-tests-${{ github.run_id }}
+          path: ${{ env.EVIDENCE_DIR }}/
+          retention-days: 365
+
+  test-integration:
+    name: Test — Integration tests
+    runs-on: ubuntu-latest
+    needs: build-docker
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: finapp_test
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://test:test@localhost/finapp_test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-test.txt
+
+      - name: Run integration tests
+        run: |
+          mkdir -p ${{ env.EVIDENCE_DIR }}
+          pytest tests/integration/ \
+            --junitxml=${{ env.EVIDENCE_DIR }}/integration-test-results.xml \
+            -v 2>&1 | tee ${{ env.EVIDENCE_DIR }}/integration-tests.log
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-integration-tests-${{ github.run_id }}
+          path: ${{ env.EVIDENCE_DIR }}/
+          retention-days: 365
+
+################################################################################
+# STAGE: deploy-dev (auto on feature branches)
+################################################################################
+  deploy-dev:
+    name: Deploy — Dev environment
+    runs-on: ubuntu-latest
+    needs: [test-unit, test-integration, security-trivy]
+    if: startsWith(github.ref, 'refs/heads/feature/')
+    environment:
+      name: dev
+      url: https://app.dev.internal.company.com
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_DEFAULT_REGION }}
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ secrets.EKS_CLUSTER_NAME }} \
+            --region ${{ env.AWS_DEFAULT_REGION }}
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: ArgoCD sync — dev
+        run: |
+          mkdir -p ${{ env.EVIDENCE_DIR }}
+
+          # Update image tag in ArgoCD app
+          curl -sSL -o argocd \
+            https://github.com/argoproj/argo-cd/releases/download/v${{ env.ARGOCD_VERSION }}/argocd-linux-amd64
+          chmod +x argocd
+
+          ./argocd app set finapp-dev \
+            --helm-set image.tag=${{ needs.build-docker.outputs.image_tag }} \
+            --server ${{ secrets.ARGOCD_SERVER }} \
+            --auth-token ${{ secrets.ARGOCD_AUTH_TOKEN }} \
+            --grpc-web
+
+          ./argocd app sync finapp-dev \
+            --server ${{ secrets.ARGOCD_SERVER }} \
+            --auth-token ${{ secrets.ARGOCD_AUTH_TOKEN }} \
+            --grpc-web \
+            --timeout 300 \
+            2>&1 | tee ${{ env.EVIDENCE_DIR }}/argocd-sync-dev.log
+
+          ./argocd app wait finapp-dev \
+            --health \
+            --timeout 300 \
+            --server ${{ secrets.ARGOCD_SERVER }} \
+            --auth-token ${{ secrets.ARGOCD_AUTH_TOKEN }} \
+            --grpc-web
+
+      - name: Save deploy evidence
+        run: |
+          cat > ${{ env.EVIDENCE_DIR }}/deploy-info.env <<EOF
+          DEPLOY_ENV=dev
+          DEPLOY_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          DEPLOYED_BY=${{ github.actor }}
+          IMAGE_TAG=${{ needs.build-docker.outputs.image_tag }}
+          COMMIT=${{ github.sha }}
+          RUN_URL=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-deploy-dev-${{ github.run_id }}
+          path: ${{ env.EVIDENCE_DIR }}/
+          retention-days: 365

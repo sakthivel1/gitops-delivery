@@ -1,0 +1,211 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: finapp-alert-rules
+  namespace: monitoring
+  labels:
+    app: finapp-alerts
+    prometheus: prometheus
+    role: alert-rules
+spec:
+  groups:
+
+    # --------------------------------------------------------------------------
+    # Cluster Health
+    # --------------------------------------------------------------------------
+    - name: cluster.health
+      interval: 1m
+      rules:
+        - alert: NodeHighCPU
+          expr: |
+            (
+              1 - avg by(node) (
+                rate(node_cpu_seconds_total{mode="idle"}[5m])
+              )
+            ) * 100 > 80
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Node CPU usage above 80%"
+            description: "Node {{ $labels.node }} CPU is at {{ $value | printf \"%.1f\" }}%"
+
+        - alert: NodeHighCPUCritical
+          expr: |
+            (
+              1 - avg by(node) (
+                rate(node_cpu_seconds_total{mode="idle"}[5m])
+              )
+            ) * 100 > 95
+          for: 2m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "Node CPU usage critically high (>95%)"
+            description: "Node {{ $labels.node }} CPU is at {{ $value | printf \"%.1f\" }}%"
+
+        - alert: NodeHighMemory
+          expr: |
+            (
+              1 - (
+                node_memory_MemAvailable_bytes /
+                node_memory_MemTotal_bytes
+              )
+            ) * 100 > 85
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Node memory usage above 85%"
+            description: "Node {{ $labels.node }} memory is at {{ $value | printf \"%.1f\" }}%"
+
+        - alert: NodeDiskPressure
+          expr: |
+            (
+              1 - (
+                node_filesystem_avail_bytes{mountpoint="/"} /
+                node_filesystem_size_bytes{mountpoint="/"}
+              )
+            ) * 100 > 80
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Node disk usage above 80%"
+            description: "Node {{ $labels.instance }} disk at {{ $value | printf \"%.1f\" }}%"
+
+    # --------------------------------------------------------------------------
+    # Pod / Deployment Health
+    # --------------------------------------------------------------------------
+    - name: pod.health
+      interval: 1m
+      rules:
+        - alert: PodCrashLooping
+          expr: |
+            rate(kube_pod_container_status_restarts_total[15m]) * 60 * 15 > 3
+          for: 5m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "Pod crash looping"
+            description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has restarted {{ $value | printf \"%.0f\" }} times in the last 15 minutes"
+
+        - alert: PodNotReady
+          expr: |
+            kube_pod_status_ready{condition="true"} == 0
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Pod not ready"
+            description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is not ready"
+
+        - alert: DeploymentReplicasMismatch
+          expr: |
+            kube_deployment_spec_replicas != kube_deployment_status_available_replicas
+          for: 10m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Deployment replicas mismatch"
+            description: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} has {{ $value }} unavailable replicas"
+
+        - alert: HPAMaxedOut
+          expr: |
+            kube_horizontalpodautoscaler_status_current_replicas ==
+            kube_horizontalpodautoscaler_spec_max_replicas
+          for: 15m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "HPA at maximum replicas"
+            description: "HPA {{ $labels.namespace }}/{{ $labels.horizontalpodautoscaler }} is at max replicas for 15 minutes"
+
+    # --------------------------------------------------------------------------
+    # Application (finapp) Metrics
+    # --------------------------------------------------------------------------
+    - name: finapp.application
+      interval: 1m
+      rules:
+        - alert: HighErrorRate
+          expr: |
+            (
+              sum by(namespace) (
+                rate(http_requests_total{status=~"5.."}[5m])
+              ) /
+              sum by(namespace) (
+                rate(http_requests_total[5m])
+              )
+            ) * 100 > 5
+          for: 3m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "High HTTP error rate (>5%)"
+            description: "Error rate in {{ $labels.namespace }} is {{ $value | printf \"%.2f\" }}%"
+
+        - alert: HighLatencyP99
+          expr: |
+            histogram_quantile(
+              0.99,
+              sum by(namespace, le) (
+                rate(http_request_duration_seconds_bucket[5m])
+              )
+            ) > 2
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "High P99 latency (>2s)"
+            description: "P99 latency in {{ $labels.namespace }} is {{ $value | printf \"%.2f\" }}s"
+
+        - alert: NoTraffic
+          expr: |
+            sum by(namespace) (
+              rate(http_requests_total[5m])
+            ) == 0
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "No traffic received"
+            description: "Namespace {{ $labels.namespace }} has received no HTTP traffic for 5 minutes"
+
+    # --------------------------------------------------------------------------
+    # ArgoCD Sync Health
+    # --------------------------------------------------------------------------
+    - name: argocd.health
+      interval: 2m
+      rules:
+        - alert: ArgoCDSyncFailed
+          expr: |
+            argocd_app_info{sync_status="OutOfSync"} == 1
+          for: 10m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "ArgoCD app out of sync"
+            description: "Application {{ $labels.name }} is out of sync for more than 10 minutes"
+
+        - alert: ArgoCDAppDegraded
+          expr: |
+            argocd_app_info{health_status="Degraded"} == 1
+          for: 5m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "ArgoCD app health degraded"
+            description: "Application {{ $labels.name }} health is Degraded"

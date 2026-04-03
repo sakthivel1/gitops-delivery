@@ -1,0 +1,79 @@
+Checkov Security Scan — Sample Evidence
+Pipeline ID: 98765
+Tool: Checkov v3.2.0
+Scan Target: infra/
+Date: 2026-04-02T09:18:00Z
+
+terraform scan results:
+
+Passed checks: 127, Failed checks: 3, Skipped checks: 0
+
+Check: CKV_AWS_18: "Ensure the S3 bucket has access logging enabled"
+  PASSED for resource: aws_s3_bucket.evidence
+  PASSED for resource: aws_s3_bucket.tfstate
+
+Check: CKV_AWS_19: "Ensure all data stored in the S3 bucket is securely encrypted at rest"
+  PASSED for resource: aws_s3_bucket.evidence
+  PASSED for resource: aws_s3_bucket.tfstate
+
+Check: CKV_AWS_20: "Ensure the S3 bucket does not allow READ permissions to everyone"
+  PASSED for resource: aws_s3_bucket.evidence
+  PASSED for resource: aws_s3_bucket.tfstate
+
+Check: CKV_AWS_145: "Ensure that S3 buckets are encrypted with KMS by default"
+  PASSED for resource: aws_s3_bucket.evidence
+  PASSED for resource: aws_s3_bucket.tfstate
+
+Check: CKV_AWS_24: "Ensure no security groups allow ingress from 0.0.0.0/0 to port 22"
+  PASSED for resource: aws_security_group.cluster
+  PASSED for resource: aws_security_group.nodes
+
+Check: CKV_AWS_25: "Ensure no security groups allow ingress from 0.0.0.0/0 to port 3389"
+  PASSED for resource: aws_security_group.cluster
+  PASSED for resource: aws_security_group.nodes
+
+Check: CKV_AWS_58: "Ensure EKS Cluster has Secrets Encryption Enabled"
+  PASSED for resource: aws_eks_cluster.main
+
+Check: CKV_AWS_37: "Ensure Amazon EKS control plane logging enabled"
+  PASSED for resource: aws_eks_cluster.main
+
+Check: CKV_AWS_39: "Ensure Amazon EKS public endpoint disabled"
+  PASSED for resource: aws_eks_cluster.main
+
+Check: CKV2_AWS_5: "Ensure That Security Groups Are Attached To Another Resource"
+  FAILED for resource: aws_security_group.cluster [LOW - Suppressed]
+  Note: Attached via reference in aws_eks_cluster.main vpc_config — false positive
+
+Check: CKV_AWS_341: "Ensure Launch Template is set to use IMDSv2"
+  PASSED for resource: aws_launch_template.nodes["general"]
+  PASSED for resource: aws_launch_template.nodes["spot"]
+
+Check: CKV_AWS_8: "Ensure that the launch template has EBS optimization enabled"
+  PASSED for resource: aws_launch_template.nodes["general"]
+
+Check: CKV_AWS_111: "Ensure IAM policies does not allow write access without constraints"
+  PASSED for resource: aws_iam_role_policy.cicd_runner
+
+=====================================================================
+COMPLIANCE GATE RESULT: PASSED
+  HIGH violations:     0
+  CRITICAL violations: 0
+  MEDIUM violations:   1 (suppressed — false positive documented)
+  LOW violations:      2 (acceptable per security exception SEC-2024-041)
+=====================================================================
+
+tfsec scan results:
+
+  Rule    │ Severity │ Description                          │ Location
+──────────┼──────────┼──────────────────────────────────────┼─────────────────
+  AWS006  │ HIGH     │ An ingress security group allows      │ None found
+          │          │ unrestricted access to port 22        │
+  AWS018  │ MEDIUM   │ Missing description for security group│ cluster-sg (has description)
+
+tfsec PASSED — no HIGH or CRITICAL violations found in infra/
+
+Trivy Container Scan:
+  Image: 123456789.dkr.ecr.us-east-1.amazonaws.com/finapp:a1b2c3d4
+  Total: 0 CRITICAL, 0 HIGH, 3 MEDIUM, 12 LOW
+  Result: PASSED (no HIGH/CRITICAL)

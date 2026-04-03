@@ -1,0 +1,122 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "type": "datasource",
+      "pluginId": "prometheus"
+    }
+  ],
+  "title": "Application Metrics — FinApp",
+  "uid": "finapp-app-metrics",
+  "tags": ["finapp", "application", "latency", "errors"],
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "namespace",
+        "label": "Namespace",
+        "type": "query",
+        "datasource": "${DS_PROMETHEUS}",
+        "query": "label_values(http_requests_total, namespace)",
+        "refresh": 2,
+        "includeAll": true
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Request Rate (req/s)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "datasource": "${DS_PROMETHEUS}",
+          "expr": "sum by(namespace) (rate(http_requests_total{namespace=~'$namespace'}[5m]))",
+          "legendFormat": "{{ namespace }}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
+    },
+    {
+      "id": 2,
+      "title": "Error Rate (%)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "datasource": "${DS_PROMETHEUS}",
+          "expr": "(sum by(namespace) (rate(http_requests_total{namespace=~'$namespace',status=~'5..'}[5m])) / sum by(namespace) (rate(http_requests_total{namespace=~'$namespace'}[5m]))) * 100",
+          "legendFormat": "{{ namespace }} error %"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Latency Percentiles (P50/P95/P99)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "datasource": "${DS_PROMETHEUS}",
+          "expr": "histogram_quantile(0.50, sum by(namespace,le) (rate(http_request_duration_seconds_bucket{namespace=~'$namespace'}[5m])))",
+          "legendFormat": "{{ namespace }} P50"
+        },
+        {
+          "datasource": "${DS_PROMETHEUS}",
+          "expr": "histogram_quantile(0.95, sum by(namespace,le) (rate(http_request_duration_seconds_bucket{namespace=~'$namespace'}[5m])))",
+          "legendFormat": "{{ namespace }} P95"
+        },
+        {
+          "datasource": "${DS_PROMETHEUS}",
+          "expr": "histogram_quantile(0.99, sum by(namespace,le) (rate(http_request_duration_seconds_bucket{namespace=~'$namespace'}[5m])))",
+          "legendFormat": "{{ namespace }} P99"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 4,
+      "title": "Pod Replica Count",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "datasource": "${DS_PROMETHEUS}",
+          "expr": "kube_deployment_status_available_replicas{namespace=~'$namespace'}",
+          "legendFormat": "{{ namespace }}/{{ deployment }}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "id": 5,
+      "title": "HTTP Status Code Breakdown",
+      "type": "piechart",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        {
+          "datasource": "${DS_PROMETHEUS}",
+          "expr": "sum by(status) (rate(http_requests_total{namespace=~'$namespace'}[5m]))",
+          "legendFormat": "HTTP {{ status }}"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 38
+}

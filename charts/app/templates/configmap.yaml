@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "finapp.fullname" . }}-nginx
+  labels:
+    {{- include "finapp.labels" . | nindent 4 }}
+data:
+  default.conf: |
+    server {
+        listen 80;
+        server_name localhost;
+
+        location /healthz {
+            return 200 'ok\n';
+            add_header Content-Type text/plain;
+        }
+
+        location /ready {
+            return 200 'ready\n';
+            add_header Content-Type text/plain;
+        }
+
+        location /metrics {
+            return 200 '# HELP http_requests_total Total HTTP requests\n# TYPE http_requests_total counter\nhttp_requests_total{status="200",namespace="{{ .Release.Namespace }}"} 100\n';
+            add_header Content-Type text/plain;
+        }
+
+        location / {
+            return 200 'FinApp | ns={{ .Release.Namespace }} | version={{ .Chart.AppVersion }}\n';
+            add_header Content-Type text/plain;
+        }
+    }

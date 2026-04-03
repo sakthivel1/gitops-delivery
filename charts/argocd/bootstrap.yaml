@@ -1,0 +1,48 @@
+# Bootstrap ArgoCD into EKS — apply with:
+#   kubectl apply -f charts/argocd/bootstrap.yaml
+#
+# Prerequisites:
+#   kubectl create namespace argocd
+#   kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: finapp
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: Financial application delivery project
+  sourceRepos:
+    - "https://gitlab.company.com/platform/gitops.git"
+  destinations:
+    - namespace: finapp-dev
+      server: https://kubernetes.default.svc
+    - namespace: finapp-staging
+      server: https://kubernetes.default.svc
+    - namespace: finapp-prod
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+  namespaceResourceWhitelist:
+    - group: "apps"
+      kind: Deployment
+    - group: "autoscaling"
+      kind: HorizontalPodAutoscaler
+    - group: "policy"
+      kind: PodDisruptionBudget
+    - group: ""
+      kind: Service
+    - group: ""
+      kind: ServiceAccount
+    - group: "networking.k8s.io"
+      kind: Ingress
+  roles:
+    - name: pipeline-deployer
+      description: CI/CD pipeline sync role
+      policies:
+        - p, proj:finapp:pipeline-deployer, applications, sync, finapp/*, allow
+        - p, proj:finapp:pipeline-deployer, applications, get, finapp/*, allow
+      jwtTokens: []

@@ -1,0 +1,140 @@
+################################################################################
+# Grafana Helm values
+# Deploy: helm upgrade --install grafana grafana/grafana \
+#           -n monitoring -f observability/grafana/values.yaml
+################################################################################
+
+fullnameOverride: grafana
+
+replicas: 2
+
+persistence:
+  enabled: true
+  storageClassName: gp3
+  size: 20Gi
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: 500m
+    memory: 1Gi
+
+# Admin credentials — override with secrets in production
+admin:
+  existingSecret: grafana-admin-credentials
+  userKey: admin-user
+  passwordKey: admin-password
+
+# Datasources
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        url: http://prometheus-prometheus:9090
+        access: proxy
+        isDefault: true
+        jsonData:
+          timeInterval: "30s"
+          queryTimeout: "60s"
+          httpMethod: GET
+
+# Dashboard providers
+dashboardProviders:
+  dashboardproviders.yaml:
+    apiVersion: 1
+    providers:
+      - name: finapp-dashboards
+        orgId: 1
+        folder: "FinApp"
+        type: file
+        disableDeletion: true
+        updateIntervalSeconds: 30
+        options:
+          path: /var/lib/grafana/dashboards/finapp
+
+      - name: kubernetes-dashboards
+        orgId: 1
+        folder: "Kubernetes"
+        type: file
+        disableDeletion: true
+        updateIntervalSeconds: 30
+        options:
+          path: /var/lib/grafana/dashboards/kubernetes
+
+# Import community dashboards by ID
+dashboards:
+  kubernetes-dashboards:
+    kubernetes-cluster:
+      gnetId: 7249
+      revision: 1
+      datasource: Prometheus
+    kubernetes-pods:
+      gnetId: 6781
+      revision: 1
+      datasource: Prometheus
+    node-exporter:
+      gnetId: 1860
+      revision: 37
+      datasource: Prometheus
+    argocd:
+      gnetId: 14584
+      revision: 1
+      datasource: Prometheus
+
+# ConfigMap dashboards (custom — see dashboards/ directory)
+dashboardsConfigMaps:
+  finapp-dashboards: "grafana-finapp-dashboards"
+
+# Grafana.ini settings
+grafana.ini:
+  server:
+    root_url: "https://grafana.internal.company.com"
+  auth:
+    disable_login_form: false
+  auth.ldap:
+    enabled: false
+  security:
+    allow_embedding: false
+    cookie_secure: true
+    strict_transport_security: true
+  analytics:
+    reporting_enabled: false
+    check_for_updates: false
+  alerting:
+    enabled: true
+  unified_alerting:
+    enabled: true
+  log:
+    mode: console
+    level: warn
+
+# Ingress
+ingress:
+  enabled: true
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+  hosts:
+    - grafana.internal.company.com
+  tls:
+    - secretName: grafana-tls
+      hosts:
+        - grafana.internal.company.com
+
+# Sidecar for dynamic dashboard loading
+sidecar:
+  dashboards:
+    enabled: true
+    label: grafana_dashboard
+    labelValue: "1"
+    searchNamespace: monitoring
+  datasources:
+    enabled: true
+    label: grafana_datasource
+    labelValue: "1"

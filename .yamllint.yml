@@ -1,0 +1,34 @@
+---
+# yamllint configuration
+# Used by the lint stage in .gitlab-ci.yml
+extends: default
+
+rules:
+  line-length:
+    max: 150
+    level: warning
+
+  truthy:
+    allowed-values: ['true', 'false', 'on', 'off', 'yes', 'no']
+    check-keys: false
+
+  comments:
+    min-spaces-from-content: 1
+
+  braces:
+    min-spaces-inside: 0
+    max-spaces-inside: 1
+
+  indentation:
+    spaces: 2
+    indent-sequences: true
+    check-multi-line-strings: false
+
+  document-start:
+    present: false
+
+ignore: |
+  infra/
+  .terraform/
+  evidence-bundle/
+  evidence/

@@ -1,0 +1,15 @@
+apiVersion: v2
+name: finapp
+description: Financial services application Helm chart
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+
+keywords:
+  - fintech
+  - api
+  - financial-services
+
+maintainers:
+  - name: platform-team
+    email: platform@company.com

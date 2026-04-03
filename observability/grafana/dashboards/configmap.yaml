@@ -1,0 +1,42 @@
+################################################################################
+# Grafana Dashboard ConfigMaps
+# The kube-prometheus-stack sidecar watches for ConfigMaps labelled
+# grafana_dashboard: "1" and auto-provisions the JSON into Grafana.
+# Label set must match grafana.sidecar.dashboards.label in grafana values.
+################################################################################
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-cluster-health
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+    app.kubernetes.io/managed-by: Helm
+data:
+  cluster-health.json: |-
+{{ .Files.Get "dashboards/cluster-health.json" | indent 4 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-app-metrics
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+    app.kubernetes.io/managed-by: Helm
+data:
+  app-metrics.json: |-
+{{ .Files.Get "dashboards/app-metrics.json" | indent 4 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-cicd-trends
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+    app.kubernetes.io/managed-by: Helm
+data:
+  cicd-trends.json: |-
+{{ .Files.Get "dashboards/cicd-trends.json" | indent 4 }}

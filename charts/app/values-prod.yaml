@@ -1,0 +1,56 @@
+replicaCount: 3
+
+image:
+  tag: ""  # Always set explicitly by CI pipeline — never use "latest" in prod
+
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789:role/finapp-prod-irsa
+
+ingress:
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+    alb.ingress.kubernetes.io/wafv2-acl-arn: arn:aws:wafv2:us-east-1:123456789:regional/webacl/finapp-prod/xxxxx
+    alb.ingress.kubernetes.io/load-balancer-attributes: access_logs.s3.enabled=true,access_logs.s3.bucket=finapp-evidence-457591021188,access_logs.s3.prefix=alb-logs
+  hosts:
+    - host: app.internal.company.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: finapp-tls-prod
+      hosts:
+        - app.internal.company.com
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 65
+
+env:
+  - name: APP_ENV
+    value: "prod"
+  - name: LOG_LEVEL
+    value: "warn"
+  - name: DB_HOST
+    valueFrom:
+      secretKeyRef:
+        name: finapp-prod-secrets
+        key: db-host
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2

@@ -1,0 +1,46 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: finapp-prod
+  namespace: argocd
+  labels:
+    environment: prod
+    team: platform
+  annotations:
+    notifications.argoproj.io/subscribe.on-sync-succeeded.slack: platform-alerts
+    notifications.argoproj.io/subscribe.on-sync-failed.pagerduty: production-critical
+    notifications.argoproj.io/subscribe.on-health-degraded.pagerduty: production-critical
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: finapp
+  source:
+    repoURL: https://gitlab.company.com/platform/gitops.git
+    targetRevision: main
+    path: charts/app
+    helm:
+      releaseName: finapp
+      valueFiles:
+        - values.yaml
+        - values-prod.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: finapp-prod
+  syncPolicy:
+    # Production: NO automated sync — requires manual approval or pipeline trigger
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+    retry:
+      limit: 2
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 10m
+  revisionHistoryLimit: 50  # Long history for audit trail
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas

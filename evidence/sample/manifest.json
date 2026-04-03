@@ -1,0 +1,42 @@
+{
+  "pipeline_id": "98765",
+  "pipeline_url": "https://gitlab.company.com/platform/finapp/-/pipelines/98765",
+  "commit_sha": "a1b2c3d4e5f6789012345678901234567890abcd",
+  "commit_branch": "main",
+  "project": "finapp",
+  "environment": "prod",
+  "image_tag": "a1b2c3d4",
+  "image_digest": "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+  "deployed_by": "pipeline-bot",
+  "approved_by": "john.doe@company.com",
+  "approval_time": "2026-04-02T09:40:12Z",
+  "bundle_status": "COMPLETE",
+  "generated_at": "2026-04-02T09:50:00Z",
+  "jira_id": "PLAT-1234",
+  "compliance_gates": {
+    "lint_terraform": "PASSED",
+    "lint_helm": "PASSED",
+    "checkov_scan": "PASSED",
+    "tfsec_scan": "PASSED",
+    "trivy_scan": "PASSED",
+    "unit_tests": "PASSED",
+    "integration_tests": "PASSED",
+    "manual_approval": "APPROVED"
+  },
+  "artifacts": {
+    "terraform-plan.log":           { "sha256": "abc123def456", "size_bytes": 4821 },
+    "terraform-apply.log":          { "sha256": "bcd234ef5678", "size_bytes": 2190 },
+    "checkov-scan.log":             { "sha256": "cde345f67890", "size_bytes": 15340 },
+    "tfsec-results.json":           { "sha256": "def456789012", "size_bytes": 3210 },
+    "trivy-scan.log":               { "sha256": "ef5678901234", "size_bytes": 8752 },
+    "build-info.env":               { "sha256": "f67890123456", "size_bytes": 245 },
+    "unit-test-results.xml":        { "sha256": "890abc123456", "size_bytes": 22410 },
+    "integration-test-results.xml": { "sha256": "901bcd234567", "size_bytes": 8930 },
+    "helm-diff-prod.log":           { "sha256": "012cde345678", "size_bytes": 1820 },
+    "argocd-sync-prod.log":         { "sha256": "123def456789", "size_bytes": 3540 },
+    "deploy-info.env":              { "sha256": "234ef5678901", "size_bytes": 412 },
+    "approval-evidence.env":        { "sha256": "345f67890123", "size_bytes": 198 },
+    "release-notes.md":             { "sha256": "456789012345", "size_bytes": 1560 },
+    "manifest.json":                { "sha256": "self", "size_bytes": 0 }
+  }
+}

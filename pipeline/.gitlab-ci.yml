@@ -1,0 +1,602 @@
+################################################################################
+# GitLab CI/CD Pipeline — Secure, Compliant Financial Services Delivery
+#
+# Branch convention enforced: feature/JIRA-ID-description
+# Stages: lint → security → build → test → deploy
+################################################################################
+
+variables:
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: "/certs"
+  IMAGE_REGISTRY: "${CI_REGISTRY}"
+  IMAGE_NAME: "${CI_REGISTRY_IMAGE}"
+  TERRAFORM_VERSION: "1.6.6"
+  HELM_VERSION: "3.14.0"
+  KUBECTL_VERSION: "1.29.0"
+  ARGOCD_VERSION: "2.10.0"
+  AWS_DEFAULT_REGION: "us-east-1"
+  EVIDENCE_DIR: "evidence-bundle"
+  # Artifact retention for compliance (days)
+  ARTIFACT_RETENTION: 365
+
+# ---- Branch naming enforcement -----------------------------------------------
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: always
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: always
+    - if: '$CI_COMMIT_BRANCH =~ /^feature\/[A-Z]+-[0-9]+-.*$/'
+      when: always
+    - if: '$CI_COMMIT_BRANCH =~ /^hotfix\/[A-Z]+-[0-9]+-.*$/'
+      when: always
+    - when: never  # Block all other branches
+
+stages:
+  - validate
+  - lint
+  - security
+  - build
+  - test
+  - deploy-dev
+  - deploy-staging
+  - deploy-prod
+  - evidence
+
+# ---- Shared anchor definitions -----------------------------------------------
+.aws_setup: &aws_setup
+  before_script:
+    - aws sts get-caller-identity
+    - aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${AWS_DEFAULT_REGION}"
+
+.evidence_artifact: &evidence_artifact
+  artifacts:
+    name: "evidence-${CI_JOB_NAME}-${CI_PIPELINE_ID}"
+    when: always
+    expire_in: "${ARTIFACT_RETENTION} days"
+    paths:
+      - "${EVIDENCE_DIR}/"
+    reports:
+      junit: "${EVIDENCE_DIR}/*.xml"
+
+# ==============================================================================
+# STAGE: validate — Branch naming + Jira ID extraction
+# ==============================================================================
+validate:branch-name:
+  stage: validate
+  image: alpine:3.19
+  script:
+    - |
+      BRANCH="${CI_COMMIT_BRANCH:-${CI_MERGE_REQUEST_SOURCE_BRANCH_NAME}}"
+      echo "Branch: $BRANCH"
+      if [[ "$BRANCH" == "main" ]]; then
+        echo "Main branch — skipping branch name check"
+        exit 0
+      fi
+      if echo "$BRANCH" | grep -qE '^(feature|hotfix)/[A-Z]+-[0-9]+-[a-z0-9-]+$'; then
+        JIRA_ID=$(echo "$BRANCH" | sed 's|.*/\([A-Z]*-[0-9]*\)-.*|\1|')
+        echo "JIRA_ID=${JIRA_ID}" >> branch.env
+        echo "Branch valid. Jira ID: $JIRA_ID"
+      else
+        echo "ERROR: Branch name does not match convention: feature/JIRA-ID-description"
+        echo "Got: $BRANCH"
+        exit 1
+      fi
+  artifacts:
+    reports:
+      dotenv: branch.env
+
+# ==============================================================================
+# STAGE: lint
+# ==============================================================================
+lint:terraform:
+  stage: lint
+  image:
+    name: hashicorp/terraform:${TERRAFORM_VERSION}
+    entrypoint: [""]
+  script:
+    - mkdir -p "${EVIDENCE_DIR}"
+    - cd infra
+    - echo "=== terraform fmt ===" | tee -a "../${EVIDENCE_DIR}/lint-terraform.log"
+    - terraform fmt -check -recursive 2>&1 | tee -a "../${EVIDENCE_DIR}/lint-terraform.log"
+    - echo "=== terraform validate ===" | tee -a "../${EVIDENCE_DIR}/lint-terraform.log"
+    - terraform init -backend=false 2>&1 | tee -a "../${EVIDENCE_DIR}/lint-terraform.log"
+    - terraform validate 2>&1 | tee -a "../${EVIDENCE_DIR}/lint-terraform.log"
+  <<: *evidence_artifact
+
+lint:tflint:
+  stage: lint
+  image: ghcr.io/terraform-linters/tflint:v0.50.0
+  script:
+    - mkdir -p "${EVIDENCE_DIR}"
+    - cd infra
+    - tflint --init
+    - tflint --recursive --format compact 2>&1 | tee -a "../${EVIDENCE_DIR}/tflint.log"
+  allow_failure: false
+  <<: *evidence_artifact
+
+lint:helm:
+  stage: lint
+  image:
+    name: alpine/helm:${HELM_VERSION}
+    entrypoint: [""]
+  script:
+    - mkdir -p "${EVIDENCE_DIR}"
+    - helm lint charts/app -f charts/app/values.yaml -f charts/app/values-dev.yaml 2>&1 | tee "${EVIDENCE_DIR}/helm-lint-dev.log"
+    - helm lint charts/app -f charts/app/values.yaml -f charts/app/values-staging.yaml 2>&1 | tee "${EVIDENCE_DIR}/helm-lint-staging.log"
+    - helm lint charts/app -f charts/app/values.yaml -f charts/app/values-prod.yaml 2>&1 | tee "${EVIDENCE_DIR}/helm-lint-prod.log"
+  <<: *evidence_artifact
+
+lint:yaml:
+  stage: lint
+  image: cytopia/yamllint:1.35
+  script:
+    - yamllint -c .yamllint.yml charts/ pipeline/ observability/
+
+# ==============================================================================
+# STAGE: security
+# ==============================================================================
+security:checkov:
+  stage: security
+  image:
+    name: bridgecrew/checkov:3.2.0
+    entrypoint: [""]
+  script:
+    - mkdir -p "${EVIDENCE_DIR}"
+    - |
+      checkov \
+        --directory infra/ \
+        --framework terraform \
+        --output cli \
+        --output junitxml \
+        --output-file-path "${EVIDENCE_DIR}/" \
+        --soft-fail-on LOW \
+        --hard-fail-on HIGH,CRITICAL \
+        2>&1 | tee "${EVIDENCE_DIR}/checkov-scan.log"
+  after_script:
+    - |
+      # Fail pipeline if HIGH/CRITICAL violations found
+      if grep -q "Failed checks: [^0]" "${EVIDENCE_DIR}/checkov-scan.log"; then
+        FAILED=$(grep "Failed checks" "${EVIDENCE_DIR}/checkov-scan.log" | tail -1)
+        echo "COMPLIANCE GATE FAILED: $FAILED"
+        exit 1
+      fi
+  artifacts:
+    when: always
+    expire_in: "${ARTIFACT_RETENTION} days"
+    paths:
+      - "${EVIDENCE_DIR}/"
+    reports:
+      junit: "${EVIDENCE_DIR}/results_junitxml.xml"
+
+security:tfsec:
+  stage: security
+  image:
+    name: aquasec/tfsec-ci:v1.28.0
+    entrypoint: [""]
+  script:
+    - mkdir -p "${EVIDENCE_DIR}"
+    - |
+      tfsec infra/ \
+        --format json \
+        --out "${EVIDENCE_DIR}/tfsec-results.json" \
+        --minimum-severity HIGH \
+        2>&1 | tee "${EVIDENCE_DIR}/tfsec-scan.log"
+  <<: *evidence_artifact
+
+security:container-scan:
+  stage: security
+  image: docker:24.0
+  services:
+    - docker:24.0-dind
+  variables:
+    TRIVY_VERSION: "0.50.0"
+  script:
+    - mkdir -p "${EVIDENCE_DIR}"
+    - |
+      docker run --rm \
+        -v /var/run/docker.sock:/var/run/docker.sock \
+        -v "${CI_PROJECT_DIR}/${EVIDENCE_DIR}:/report" \
+        aquasec/trivy:${TRIVY_VERSION} \
+        image \
+        --exit-code 1 \
+        --severity HIGH,CRITICAL \
+        --format table \
+        --output /report/trivy-scan.log \
+        "${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}" || TRIVY_EXIT=$?
+    - |
+      if [[ "${TRIVY_EXIT:-0}" -ne 0 ]]; then
+        echo "COMPLIANCE GATE FAILED: Trivy found HIGH/CRITICAL vulnerabilities"
+        cat "${EVIDENCE_DIR}/trivy-scan.log"
+        exit 1
+      fi
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  <<: *evidence_artifact
+
+security:secret-detection:
+  stage: security
+  image: registry.gitlab.com/gitlab-org/security-products/secret-detection:5
+  script:
+    - /analyzer run
+  artifacts:
+    reports:
+      secret_detection: gl-secret-detection-report.json
+
+# ==============================================================================
+# STAGE: build
+# ==============================================================================
+build:docker:
+  stage: build
+  image: docker:24.0
+  services:
+    - docker:24.0-dind
+  script:
+    - mkdir -p "${EVIDENCE_DIR}"
+    - docker login -u "${CI_REGISTRY_USER}" -p "${CI_REGISTRY_PASSWORD}" "${CI_REGISTRY}"
+    - |
+      docker build \
+        --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --build-arg VCS_REF="${CI_COMMIT_SHA}" \
+        --build-arg VERSION="${CI_COMMIT_TAG:-${CI_COMMIT_SHORT_SHA}}" \
+        --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --label "org.opencontainers.image.revision=${CI_COMMIT_SHA}" \
+        --label "org.opencontainers.image.source=${CI_PROJECT_URL}" \
+        -t "${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}" \
+        -t "${IMAGE_NAME}:latest" \
+        .
+    - docker push "${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}"
+    - docker push "${IMAGE_NAME}:latest"
+    # Record image digest for evidence
+    - |
+      DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}")
+      echo "IMAGE_DIGEST=${DIGEST}" >> "${EVIDENCE_DIR}/build-info.env"
+      echo "IMAGE_TAG=${CI_COMMIT_SHORT_SHA}" >> "${EVIDENCE_DIR}/build-info.env"
+      echo "BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${EVIDENCE_DIR}/build-info.env"
+      echo "COMMIT=${CI_COMMIT_SHA}" >> "${EVIDENCE_DIR}/build-info.env"
+      cat "${EVIDENCE_DIR}/build-info.env"
+  artifacts:
+    reports:
+      dotenv: "${EVIDENCE_DIR}/build-info.env"
+    paths:
+      - "${EVIDENCE_DIR}/"
+    expire_in: "${ARTIFACT_RETENTION} days"
+
+build:terraform-plan:
+  stage: build
+  image:
+    name: hashicorp/terraform:${TERRAFORM_VERSION}
+    entrypoint: [""]
+  <<: *aws_setup
+  script:
+    - mkdir -p "${EVIDENCE_DIR}"
+    - cd infra
+    - |
+      terraform init \
+        -backend-config="bucket=${TF_STATE_BUCKET}" \
+        -backend-config="key=${CI_PROJECT_NAME}/${ENV}/terraform.tfstate" \
+        -backend-config="region=${AWS_DEFAULT_REGION}" \
+        -backend-config="dynamodb_table=${TF_LOCK_TABLE}" \
+        2>&1 | tee -a "../${EVIDENCE_DIR}/terraform-init.log"
+    - |
+      terraform plan \
+        -var-file="environments/${ENV}.tfvars" \
+        -out=tfplan.binary \
+        2>&1 | tee -a "../${EVIDENCE_DIR}/terraform-plan.log"
+    - terraform show -json tfplan.binary > "../${EVIDENCE_DIR}/terraform-plan.json"
+    - cp tfplan.binary "../${EVIDENCE_DIR}/"
+  variables:
+    ENV: dev
+  artifacts:
+    paths:
+      - infra/tfplan.binary
+      - "${EVIDENCE_DIR}/"
+    expire_in: "${ARTIFACT_RETENTION} days"
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^(feature|hotfix)\/.*$/ || $CI_COMMIT_BRANCH == "main"'
+
+# ==============================================================================
+# STAGE: test
+# ==============================================================================
+test:unit:
+  stage: test
+  image: python:3.12-slim
+  script:
+    - mkdir -p "${EVIDENCE_DIR}"
+    - pip install -r requirements-test.txt
+    - |
+      pytest tests/unit/ \
+        --junitxml="${EVIDENCE_DIR}/unit-test-results.xml" \
+        --cov=src \
+        --cov-report=xml:"${EVIDENCE_DIR}/coverage.xml" \
+        -v 2>&1 | tee "${EVIDENCE_DIR}/unit-tests.log"
+  coverage: '/TOTAL.*\s+(\d+%)$/'
+  artifacts:
+    when: always
+    expire_in: "${ARTIFACT_RETENTION} days"
+    paths:
+      - "${EVIDENCE_DIR}/"
+    reports:
+      junit: "${EVIDENCE_DIR}/unit-test-results.xml"
+      coverage_report:
+        coverage_format: cobertura
+        path: "${EVIDENCE_DIR}/coverage.xml"
+
+test:integration:
+  stage: test
+  image: python:3.12-slim
+  services:
+    - name: postgres:15-alpine
+      alias: db
+  variables:
+    POSTGRES_DB: finapp_test
+    POSTGRES_USER: test
+    POSTGRES_PASSWORD: test
+    DATABASE_URL: postgresql://test:test@db/finapp_test
+  script:
+    - mkdir -p "${EVIDENCE_DIR}"
+    - pip install -r requirements-test.txt
+    - |
+      pytest tests/integration/ \
+        --junitxml="${EVIDENCE_DIR}/integration-test-results.xml" \
+        -v 2>&1 | tee "${EVIDENCE_DIR}/integration-tests.log"
+  artifacts:
+    when: always
+    expire_in: "${ARTIFACT_RETENTION} days"
+    paths:
+      - "${EVIDENCE_DIR}/"
+    reports:
+      junit: "${EVIDENCE_DIR}/integration-test-results.xml"
+
+# ==============================================================================
+# STAGE: deploy-dev (auto on feature branches)
+# ==============================================================================
+deploy:dev:
+  stage: deploy-dev
+  image: argoproj/argocd:v${ARGOCD_VERSION}
+  environment:
+    name: dev
+    url: https://app.dev.internal.company.com
+  script:
+    - mkdir -p "${EVIDENCE_DIR}"
+    - |
+      # Generate helm diff for evidence
+      helm diff upgrade finapp charts/app \
+        -n finapp-dev \
+        -f charts/app/values.yaml \
+        -f charts/app/values-dev.yaml \
+        --set image.tag="${CI_COMMIT_SHORT_SHA}" \
+        2>&1 | tee "${EVIDENCE_DIR}/helm-diff-dev.log"
+    - |
+      argocd app set finapp-dev \
+        --helm-set image.tag="${CI_COMMIT_SHORT_SHA}" \
+        --server "${ARGOCD_SERVER}" \
+        --auth-token "${ARGOCD_AUTH_TOKEN}"
+    - |
+      argocd app sync finapp-dev \
+        --server "${ARGOCD_SERVER}" \
+        --auth-token "${ARGOCD_AUTH_TOKEN}" \
+        --timeout 300 \
+        2>&1 | tee "${EVIDENCE_DIR}/argocd-sync-dev.log"
+    - |
+      argocd app wait finapp-dev \
+        --health \
+        --timeout 300 \
+        --server "${ARGOCD_SERVER}" \
+        --auth-token "${ARGOCD_AUTH_TOKEN}"
+    - echo "DEPLOY_ENV=dev" >> "${EVIDENCE_DIR}/deploy-info.env"
+    - echo "DEPLOY_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${EVIDENCE_DIR}/deploy-info.env"
+    - echo "DEPLOYED_BY=${GITLAB_USER_LOGIN}" >> "${EVIDENCE_DIR}/deploy-info.env"
+    - echo "IMAGE_TAG=${CI_COMMIT_SHORT_SHA}" >> "${EVIDENCE_DIR}/deploy-info.env"
+  <<: *evidence_artifact
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^feature\/.*$/'
+
+# ==============================================================================
+# STAGE: deploy-staging (auto on main)
+# ==============================================================================
+deploy:staging:
+  stage: deploy-staging
+  image: argoproj/argocd:v${ARGOCD_VERSION}
+  environment:
+    name: staging
+    url: https://app.staging.internal.company.com
+  script:
+    - mkdir -p "${EVIDENCE_DIR}"
+    - |
+      helm diff upgrade finapp charts/app \
+        -n finapp-staging \
+        -f charts/app/values.yaml \
+        -f charts/app/values-staging.yaml \
+        --set image.tag="${CI_COMMIT_SHORT_SHA}" \
+        2>&1 | tee "${EVIDENCE_DIR}/helm-diff-staging.log"
+    - |
+      argocd app set finapp-staging \
+        --helm-set image.tag="${CI_COMMIT_SHORT_SHA}" \
+        --server "${ARGOCD_SERVER}" \
+        --auth-token "${ARGOCD_AUTH_TOKEN}"
+    - |
+      argocd app sync finapp-staging \
+        --server "${ARGOCD_SERVER}" \
+        --auth-token "${ARGOCD_AUTH_TOKEN}" \
+        --timeout 300 \
+        2>&1 | tee "${EVIDENCE_DIR}/argocd-sync-staging.log"
+    - |
+      argocd app wait finapp-staging \
+        --health \
+        --timeout 300 \
+        --server "${ARGOCD_SERVER}" \
+        --auth-token "${ARGOCD_AUTH_TOKEN}"
+  <<: *evidence_artifact
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+# ==============================================================================
+# STAGE: deploy-prod (manual approval gate — compliance requirement)
+# ==============================================================================
+deploy:prod:approve:
+  stage: deploy-prod
+  image: alpine:3.19
+  environment:
+    name: production-approval
+  script:
+    - echo "Manual approval gate for production deployment"
+    - echo "Approver: ${GITLAB_USER_LOGIN}"
+    - echo "Commit: ${CI_COMMIT_SHA}"
+    - echo "Pipeline: ${CI_PIPELINE_URL}"
+    - echo "APPROVED_BY=${GITLAB_USER_LOGIN}" > approval.env
+    - echo "APPROVAL_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> approval.env
+  artifacts:
+    reports:
+      dotenv: approval.env
+    paths:
+      - approval.env
+    expire_in: "${ARTIFACT_RETENTION} days"
+  when: manual
+  allow_failure: false
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+deploy:prod:
+  stage: deploy-prod
+  image: argoproj/argocd:v${ARGOCD_VERSION}
+  environment:
+    name: production
+    url: https://app.internal.company.com
+  needs:
+    - job: deploy:prod:approve
+      artifacts: true
+    - job: deploy:staging
+      artifacts: true
+  script:
+    - mkdir -p "${EVIDENCE_DIR}"
+    - |
+      # Record approval evidence
+      cp approval.env "${EVIDENCE_DIR}/approval-evidence.env"
+    - |
+      helm diff upgrade finapp charts/app \
+        -n finapp-prod \
+        -f charts/app/values.yaml \
+        -f charts/app/values-prod.yaml \
+        --set image.tag="${CI_COMMIT_SHORT_SHA}" \
+        2>&1 | tee "${EVIDENCE_DIR}/helm-diff-prod.log"
+    - |
+      argocd app set finapp-prod \
+        --helm-set image.tag="${CI_COMMIT_SHORT_SHA}" \
+        --server "${ARGOCD_SERVER}" \
+        --auth-token "${ARGOCD_AUTH_TOKEN}"
+    - |
+      argocd app sync finapp-prod \
+        --server "${ARGOCD_SERVER}" \
+        --auth-token "${ARGOCD_AUTH_TOKEN}" \
+        --timeout 600 \
+        2>&1 | tee "${EVIDENCE_DIR}/argocd-sync-prod.log"
+    - |
+      argocd app wait finapp-prod \
+        --health \
+        --timeout 600 \
+        --server "${ARGOCD_SERVER}" \
+        --auth-token "${ARGOCD_AUTH_TOKEN}"
+    - echo "DEPLOY_ENV=prod" >> "${EVIDENCE_DIR}/deploy-info.env"
+    - echo "DEPLOY_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${EVIDENCE_DIR}/deploy-info.env"
+    - echo "DEPLOYED_BY=${GITLAB_USER_LOGIN}" >> "${EVIDENCE_DIR}/deploy-info.env"
+    - echo "APPROVED_BY=${APPROVED_BY}" >> "${EVIDENCE_DIR}/deploy-info.env"
+    - echo "IMAGE_TAG=${CI_COMMIT_SHORT_SHA}" >> "${EVIDENCE_DIR}/deploy-info.env"
+    - echo "PIPELINE_URL=${CI_PIPELINE_URL}" >> "${EVIDENCE_DIR}/deploy-info.env"
+  <<: *evidence_artifact
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+# ==============================================================================
+# STAGE: terraform apply (prod infra — manual gate)
+# ==============================================================================
+infra:apply:
+  stage: deploy-prod
+  image:
+    name: hashicorp/terraform:${TERRAFORM_VERSION}
+    entrypoint: [""]
+  <<: *aws_setup
+  needs:
+    - job: build:terraform-plan
+      artifacts: true
+    - job: deploy:prod:approve
+      artifacts: true
+  script:
+    - mkdir -p "${EVIDENCE_DIR}"
+    - cd infra
+    - |
+      terraform apply \
+        -auto-approve \
+        tfplan.binary \
+        2>&1 | tee -a "../${EVIDENCE_DIR}/terraform-apply.log"
+    - echo "INFRA_APPLIED_BY=${GITLAB_USER_LOGIN}" >> "../${EVIDENCE_DIR}/infra-apply.env"
+    - echo "INFRA_APPLY_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "../${EVIDENCE_DIR}/infra-apply.env"
+  <<: *evidence_artifact
+  when: manual
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+# ==============================================================================
+# STAGE: evidence — package and upload compliance bundle
+# ==============================================================================
+evidence:package:
+  stage: evidence
+  image: amazon/aws-cli:2.15.0
+  needs:
+    - job: lint:terraform
+      artifacts: true
+    - job: security:checkov
+      artifacts: true
+    - job: build:docker
+      artifacts: true
+    - job: test:unit
+      artifacts: true
+    - job: test:integration
+      artifacts: true
+    - job: deploy:prod
+      artifacts: true
+      optional: true
+  script:
+    - mkdir -p "${EVIDENCE_DIR}"
+    - |
+      # Generate manifest
+      cat > "${EVIDENCE_DIR}/manifest.json" <<EOF
+      {
+        "pipeline_id": "${CI_PIPELINE_ID}",
+        "pipeline_url": "${CI_PIPELINE_URL}",
+        "commit_sha": "${CI_COMMIT_SHA}",
+        "commit_branch": "${CI_COMMIT_BRANCH}",
+        "project": "${CI_PROJECT_NAME}",
+        "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+        "image_tag": "${CI_COMMIT_SHORT_SHA}",
+        "triggered_by": "${GITLAB_USER_LOGIN}"
+      }
+      EOF
+    # Generate release notes using standalone script
+    - |
+      bash pipeline/generate-release-notes.sh \
+        "" \
+        HEAD \
+        "${EVIDENCE_DIR}/release-notes.md"
+    - |
+      # Package bundle
+      BUNDLE="evidence-${CI_PROJECT_NAME}-${CI_PIPELINE_ID}-$(date +%Y%m%d).zip"
+      zip -r "${BUNDLE}" "${EVIDENCE_DIR}/"
+      echo "BUNDLE_NAME=${BUNDLE}" >> bundle.env
+    - |
+      # Upload to S3
+      aws s3 cp "${BUNDLE}" \
+        "s3://${EVIDENCE_BUCKET}/pipelines/${CI_PIPELINE_ID}/${BUNDLE}" \
+        --sse aws:kms \
+        --metadata "pipeline-id=${CI_PIPELINE_ID},commit=${CI_COMMIT_SHA}"
+      echo "Evidence uploaded: s3://${EVIDENCE_BUCKET}/pipelines/${CI_PIPELINE_ID}/${BUNDLE}"
+  artifacts:
+    paths:
+      - "evidence-*.zip"
+      - "${EVIDENCE_DIR}/"
+    expire_in: "${ARTIFACT_RETENTION} days"
+    reports:
+      dotenv: bundle.env
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - when: never

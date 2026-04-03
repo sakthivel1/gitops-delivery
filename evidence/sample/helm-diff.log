@@ -1,0 +1,41 @@
+Helm Diff — Production Deployment
+Pipeline ID: 98765
+Environment: prod
+Namespace: finapp-prod
+Release: finapp
+Date: 2026-04-02T09:45:00Z
+Previous Tag: 8f3a1b2
+New Tag: a1b2c3d4
+
+--- current
++++ new
+
+default/Deployment/finapp:
+  spec:
+    template:
+      spec:
+        containers:
+          - image: 123456789.dkr.ecr.us-east-1.amazonaws.com/finapp:8f3a1b2
+          + image: 123456789.dkr.ecr.us-east-1.amazonaws.com/finapp:a1b2c3d4
+
+No other changes detected.
+Rolling update: maxSurge=1, maxUnavailable=0
+
+ArgoCD Sync Log:
+
+TIMESTAMP             GROUP                    KIND        NAMESPACE     NAME              STATUS     HEALTH   HOOK  MESSAGE
+2026-04-02T09:46:00Z  apps                     Deployment  finapp-prod   finapp            Running    Healthy
+2026-04-02T09:46:15Z  apps                     Deployment  finapp-prod   finapp            Synced     Healthy        deployment.apps/finapp configured
+2026-04-02T09:47:30Z                           Service     finapp-prod   finapp            Synced     Healthy
+2026-04-02T09:47:31Z  autoscaling              HPA         finapp-prod   finapp            Synced     Healthy
+2026-04-02T09:47:32Z  policy                   PDB         finapp-prod   finapp            Synced     Healthy
+
+Sync Status: Synced
+Health Status: Healthy
+Sync Duration: 92s
+
+Post-sync health check: PASSED
+  ✓ All pods Running (3/3)
+  ✓ Readiness probes passing
+  ✓ No increased error rate detected
+  ✓ P99 latency within baseline (<500ms)
