@@ -14,7 +14,7 @@ metadata:
 spec:
   project: finapp
   source:
-    repoURL: https://gitlab.company.com/platform/gitops.git
+    repoURL: https://github.com/sakthivel1/gitops-delivery.git
     targetRevision: main
     path: charts/app
     helm:

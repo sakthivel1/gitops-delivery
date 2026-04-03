@@ -502,6 +502,7 @@ jobs:
           ./argocd version --client
 
           ./argocd app set finapp-dev \
+            --repo https://github.com/sakthivel1/gitops-delivery.git \
             --helm-set image.tag=${{ needs.build-docker.outputs.image_tag }} \
             --server ${{ secrets.ARGOCD_SERVER }} \
             --auth-token ${{ secrets.ARGOCD_AUTH_TOKEN }} \
