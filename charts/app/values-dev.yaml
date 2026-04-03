@@ -9,8 +9,6 @@ serviceAccount:
 
 ingress:
   enabled: false
-
-ingress:
   hosts:
     - host: app.dev.internal.company.com
       paths:
