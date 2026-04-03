@@ -3,8 +3,19 @@
 #
 # Prerequisites:
 #   kubectl create namespace argocd
-#   kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+#   kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/v2.10.4/manifests/install.yaml
 
+---
+# Patch argocd-cm to enable apiKey capability for admin (required for CI token auth)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cm
+  namespace: argocd
+data:
+  accounts.admin: "apiKey,login"
+
+---
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
 metadata:
@@ -15,7 +26,7 @@ metadata:
 spec:
   description: Financial application delivery project
   sourceRepos:
-    - "https://gitlab.company.com/platform/gitops.git"
+    - "https://github.com/sakthivel1/gitops-delivery.git"
   destinations:
     - namespace: finapp-dev
       server: https://kubernetes.default.svc
