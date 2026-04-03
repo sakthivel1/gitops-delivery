@@ -287,7 +287,9 @@ jobs:
     name: Build — Terraform Plan (dev)
     runs-on: ubuntu-latest
     needs: [security-checkov]
-    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/feature/')
+    # Only run on main — feature branches use terraform validate (-backend=false) in lint-terraform.
+    # The S3 backend must be bootstrapped once via infra/bootstrap-backend.sh before this job runs.
+    if: github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
 
@@ -303,9 +305,11 @@ jobs:
 
       - name: Terraform init
         run: |
+          set -o pipefail
           mkdir -p ${{ env.EVIDENCE_DIR }}
           cd infra
           terraform init \
+            -reconfigure \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
             -backend-config="key=${{ github.event.repository.name }}/dev/terraform.tfstate" \
             -backend-config="region=${{ env.AWS_DEFAULT_REGION }}" \
@@ -314,6 +318,7 @@ jobs:
 
       - name: Terraform plan
         run: |
+          set -o pipefail
           cd infra
           terraform plan \
             -var-file="environments/dev.tfvars" \
