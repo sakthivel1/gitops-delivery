@@ -501,13 +501,10 @@ jobs:
           chmod +x argocd
           ./argocd version --client
 
-          ./argocd app set finapp-dev \
-            --repo https://github.com/sakthivel1/gitops-delivery.git \
-            --helm-set image.tag=${{ needs.build-docker.outputs.image_tag }} \
-            --server ${{ secrets.ARGOCD_SERVER }} \
-            --auth-token ${{ secrets.ARGOCD_AUTH_TOKEN }} \
-            --grpc-web \
-            --insecure
+          # Update the image tag directly on the live Application object via kubectl
+          # (avoids ArgoCD repo-server needing outbound github.com access just for app set)
+          kubectl patch application finapp-dev -n argocd --type merge \
+            --patch "{\"spec\":{\"source\":{\"repoURL\":\"https://github.com/sakthivel1/gitops-delivery.git\",\"helm\":{\"parameters\":[{\"name\":\"image.tag\",\"value\":\"${{ needs.build-docker.outputs.image_tag }}\"}]}}}}"
 
           ./argocd app sync finapp-dev \
             --server ${{ secrets.ARGOCD_SERVER }} \
