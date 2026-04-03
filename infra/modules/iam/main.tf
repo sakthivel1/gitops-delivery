@@ -185,6 +185,15 @@ resource "aws_iam_role_policy" "cicd_runner" {
           "dynamodb:DeleteItem"
         ]
         Resource = "arn:aws:dynamodb:${var.region}:${var.account_id}:table/${var.tflock_table}"
+      },
+      {
+        Sid    = "EKSAccess"
+        Effect = "Allow"
+        Action = [
+          "eks:DescribeCluster",
+          "eks:ListClusters"
+        ]
+        Resource = "arn:aws:eks:${var.region}:${var.account_id}:cluster/*"
       }
     ]
   })
