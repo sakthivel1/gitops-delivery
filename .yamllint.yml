@@ -32,3 +32,4 @@ ignore: |
   .terraform/
   evidence-bundle/
   evidence/
+  observability/grafana/dashboards/configmap.yaml
