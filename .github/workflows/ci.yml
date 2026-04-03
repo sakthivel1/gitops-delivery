@@ -27,6 +27,7 @@ permissions:
 env:
   TERRAFORM_VERSION: '1.6.6'
   HELM_VERSION: '3.14.0'
+  ARGOCD_VERSION: '2.10.4'
   AWS_DEFAULT_REGION: 'us-east-1'
   EVIDENCE_DIR: 'evidence-bundle'
   IMAGE_NAME: ghcr.io/${{ github.repository }}
@@ -494,10 +495,11 @@ jobs:
         run: |
           mkdir -p ${{ env.EVIDENCE_DIR }}
 
-          # Update image tag in ArgoCD app
-          curl -sSL -o argocd \
+          # Download ArgoCD CLI
+          curl -sSL -f -o argocd \
             https://github.com/argoproj/argo-cd/releases/download/v${{ env.ARGOCD_VERSION }}/argocd-linux-amd64
           chmod +x argocd
+          ./argocd version --client
 
           ./argocd app set finapp-dev \
             --helm-set image.tag=${{ needs.build-docker.outputs.image_tag }} \
