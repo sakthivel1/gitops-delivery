@@ -192,6 +192,9 @@ resource "aws_iam_role_policy" "cicd_runner" {
 
 # ---- Terraform State Backend (S3 + DynamoDB) ---------------------------------
 resource "aws_s3_bucket" "tfstate" {
+  # checkov:skip=CKV_AWS_144: Cross-region replication not required for single-region Terraform state
+  # checkov:skip=CKV_AWS_18: Access logging to a separate bucket not warranted for internal state storage
+  # checkov:skip=CKV2_AWS_62: Event notifications not required for Terraform state bucket
   bucket = var.tfstate_bucket
 
   tags = merge(var.common_tags, {
@@ -277,6 +280,9 @@ resource "aws_dynamodb_table" "tflock" {
 
 # ---- Evidence S3 Bucket ------------------------------------------------------
 resource "aws_s3_bucket" "evidence" {
+  # checkov:skip=CKV_AWS_144: Cross-region replication not required; evidence retained 7 years with versioning
+  # checkov:skip=CKV_AWS_18: This bucket IS the central audit/logging destination; self-logging would be circular
+  # checkov:skip=CKV2_AWS_62: Event notifications not required for audit evidence bucket
   bucket = var.evidence_bucket
 
   tags = merge(var.common_tags, {
