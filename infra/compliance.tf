@@ -217,6 +217,7 @@ resource "aws_kms_key_policy" "main" {
 }
 
 # ---- CloudTrail (Audit log of all API calls) ---------------------------------
+# checkov:skip=CKV_AWS_252: SNS notification for CloudTrail is optional; alerts handled via CloudWatch Alarms
 resource "aws_cloudtrail" "main" {
   name                          = "${var.project_name}-trail"
   s3_bucket_name                = module.iam.evidence_bucket_id

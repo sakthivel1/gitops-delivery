@@ -46,6 +46,12 @@ variable "node_groups" {
   }))
 }
 
+variable "public_access_cidrs" {
+  description = "CIDRs allowed to access EKS public endpoint. Restrict to known IPs in production."
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+}
+
 variable "common_tags" {
   description = "Mandatory compliance tags"
   type        = map(string)

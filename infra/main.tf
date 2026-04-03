@@ -94,6 +94,7 @@ module "alb_logging" {
   name          = "${var.project_name}-${var.environment}"
   log_bucket_id = module.iam.evidence_bucket_id
   account_id    = data.aws_caller_identity.current.account_id
+  kms_key_arn   = aws_kms_key.main.arn
   common_tags   = local.common_tags
 }
 

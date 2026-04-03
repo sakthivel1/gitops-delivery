@@ -19,6 +19,11 @@ variable "elb_account_id" {
   default     = "127311923021"  # us-east-1 ELB account
 }
 
+variable "kms_key_arn" {
+  description = "KMS key ARN for encrypting CloudWatch log group"
+  type        = string
+}
+
 variable "common_tags" {
   description = "Compliance tags"
   type        = map(string)
