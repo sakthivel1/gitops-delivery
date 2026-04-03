@@ -505,12 +505,14 @@ jobs:
             --helm-set image.tag=${{ needs.build-docker.outputs.image_tag }} \
             --server ${{ secrets.ARGOCD_SERVER }} \
             --auth-token ${{ secrets.ARGOCD_AUTH_TOKEN }} \
-            --grpc-web
+            --grpc-web \
+            --insecure
 
           ./argocd app sync finapp-dev \
             --server ${{ secrets.ARGOCD_SERVER }} \
             --auth-token ${{ secrets.ARGOCD_AUTH_TOKEN }} \
             --grpc-web \
+            --insecure \
             --timeout 300 \
             2>&1 | tee ${{ env.EVIDENCE_DIR }}/argocd-sync-dev.log
 
@@ -519,7 +521,8 @@ jobs:
             --timeout 300 \
             --server ${{ secrets.ARGOCD_SERVER }} \
             --auth-token ${{ secrets.ARGOCD_AUTH_TOKEN }} \
-            --grpc-web
+            --grpc-web \
+            --insecure
 
       - name: Save deploy evidence
         run: |
