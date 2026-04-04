@@ -501,6 +501,13 @@ jobs:
           chmod +x argocd
           ./argocd version --client
 
+          # Register repo so argocd skips connectivity re-validation on app set
+          ./argocd repo add https://github.com/sakthivel1/gitops-delivery.git \
+            --server ${{ secrets.ARGOCD_SERVER }} \
+            --auth-token ${{ secrets.ARGOCD_AUTH_TOKEN }} \
+            --grpc-web \
+            --insecure || true
+
           ./argocd app set finapp-dev \
             --helm-set image.tag=${{ needs.build-docker.outputs.image_tag }} \
             --server ${{ secrets.ARGOCD_SERVER }} \
