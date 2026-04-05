@@ -9,10 +9,13 @@
 name: Deploy Pipeline
 
 on:
-  workflow_run:
-    workflows: ['CI Pipeline']
-    types: [completed]
-    branches: [main]
+  # Auto-triggers disabled — infrastructure torn down April 2026
+  # Re-enable by restoring workflow_run trigger below
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Reason for manual run'
+        required: true
 
 permissions:
   contents: read

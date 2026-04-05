@@ -9,14 +9,13 @@
 name: CI Pipeline
 
 on:
-  push:
-    branches:
-      - main
-      - 'feature/**'
-      - 'hotfix/**'
-  pull_request:
-    branches:
-      - main
+  # Auto-triggers disabled — infrastructure torn down April 2026
+  # Re-enable by restoring push/pull_request triggers below
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Reason for manual run'
+        required: true
 
 permissions:
   contents: read
