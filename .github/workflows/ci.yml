@@ -501,33 +501,37 @@ jobs:
           chmod +x argocd
           ./argocd version --client
 
-          # Register repo so argocd skips connectivity re-validation on app set
+          # Use port-forward to reach ArgoCD — bypasses LB/gRPC HTTP2 issues
           ./argocd repo add https://github.com/sakthivel1/gitops-delivery.git \
-            --server ${{ secrets.ARGOCD_SERVER }} \
+            --port-forward \
+            --port-forward-namespace argocd \
             --auth-token ${{ secrets.ARGOCD_AUTH_TOKEN }} \
             --grpc-web \
             --insecure || true
 
           ./argocd app set finapp-dev \
             --helm-set image.tag=${{ needs.build-docker.outputs.image_tag }} \
-            --server ${{ secrets.ARGOCD_SERVER }} \
+            --port-forward \
+            --port-forward-namespace argocd \
             --auth-token ${{ secrets.ARGOCD_AUTH_TOKEN }} \
             --grpc-web \
             --insecure
 
           ./argocd app sync finapp-dev \
-            --server ${{ secrets.ARGOCD_SERVER }} \
+            --port-forward \
+            --port-forward-namespace argocd \
             --auth-token ${{ secrets.ARGOCD_AUTH_TOKEN }} \
             --grpc-web \
             --insecure \
             --timeout 300 \
             2>&1 | tee ${{ env.EVIDENCE_DIR }}/argocd-sync-dev.log || \
-            echo "WARNING: argocd sync failed — repo-server may lack outbound connectivity to github.com"
+            echo "WARNING: argocd sync failed — check ArgoCD UI for sync status"
 
           ./argocd app wait finapp-dev \
             --health \
             --timeout 120 \
-            --server ${{ secrets.ARGOCD_SERVER }} \
+            --port-forward \
+            --port-forward-namespace argocd \
             --auth-token ${{ secrets.ARGOCD_AUTH_TOKEN }} \
             --grpc-web \
             --insecure || \
